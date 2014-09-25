@@ -1,0 +1,5 @@
+python-wefact-api (1.0) stable; urgency=low
+
+  - Initial package release
+
+ -- Mark Schouten <mark@tuxis.nl>  Wed, 25 Sep 2014 16:17:25 +0200

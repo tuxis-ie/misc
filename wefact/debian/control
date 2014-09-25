@@ -1,0 +1,12 @@
+Source: python-wefact-api
+Section: misc
+Priority: extra
+Maintainer: Mark Schouten <mark@tuxis.nl>
+Build-Depends: debhelper (>= 5), python
+Standards-Version: 3.9.1
+
+Package: python-wefact-api
+Architecture: all
+Depends: python-simplejson, python-requests, python-dateutil
+Description: Install the wefact API Library for Python
+ Install the wefact API Library for Python

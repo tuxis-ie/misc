@@ -15,84 +15,152 @@
 # See http://www.gnu.org/licenses/gpl.txt for the full license
 
 from yaml import load, dump
+import sys
 from os import listdir, devnull
+from copy import deepcopy
 from pprint import pprint
 from subprocess import call, check_output, STDOUT
 
-CONFDIR = '/usr/local/sbin/zones'
-OUTCONF = '/etc/powerdns/geoip.zones'
+try:
+    readfile = sys.argv[1]
+except:
+    print "Enter a filename to read"
+    sys.exit(1)
 
 document = ""
 
 FNULL = open(devnull, 'w')
 
-def conf_in():
+class Node():
+    def __init__(self, name):
+        self.name = name
+        self.a    = []
+        self.aaaa = []
+        self.ct   = []
+        self.asn  = []
+        self.zone = None
+
+    def set_zone(self, z):
+        self.zone = z
+
+    def add_addr(self, addr):
+        if ":" in addr:
+            self.add_aaaa(addr)
+        else:
+            self.add_a(addr)
+
+    def add_a(self, addr):
+        self.a.append(addr)
+
+    def add_aaaa(self, addr):
+        self.aaaa.append(addr)
+
+    def add_asn(self, asnr):
+        self.asn.append(asnr)
+
+    def add_ct(self, country):
+        self.ct.append(country)
+
+    def has_addr(self):
+        if len(self.a) > 0 or len(self.aaaa) > 0:
+            return True
+
+        return False
+
+    def get_addrs(self):
+        ret = []
+        for a in self.aaaa:
+            ret.append({'aaaa': a})
+        for a in self.a:
+            ret.append({'a': a})
+
+        return ret
+
+    def get_rrs(self):
+        if not self.zone:
+            print "Set a zone name"
+            return False
+
+        rr = {}
+
+        for ct in self.ct:
+            l = "%s.%s" % (ct, self.zone)
+            rr[l] = self.get_addrs()
+
+        for asnr in self.asn:
+            l = "as%s.%s" % (asnr, self.zone)
+            rr[l] = self.get_addrs()
+            for ct in self.ct:
+                l = "as%s.%s.%s" % (asnr, ct, self.zone)
+                rr[l] = self.get_addrs()
+
+        return rr
+
+    def export(self):
+        pprint (vars(self))
+
+def read_conf():
     global document
-    f = open('/'.join([CONFDIR, 'cdn.tuxis.nl.yaml']))
+    try:
+        f = open(readfile)
+    except Exception, e:
+        print "Could not open file %s: %s" % (readfile, e)
+        exit(1)
+
     document = load(f.read())
 
 def check_node(n):
-    c = []
-    ret = []
-    doret = False
-    for f in n:
-        for k, v in f.iteritems():
-            if k == 'check':
-                check = v
-            else:
-                c.append({k:v})
+    retcode = call(["/usr/lib/nagios/plugins/check_tcp", "-H", n, "-p 80", "-t 2"], stdout=FNULL, stderr=STDOUT)
+    if retcode == 0:
+        return True
 
-    for r in c:
-        for k, v in r.iteritems():
-            if k in ['a', 'aaaa']:
-                if check == "http":
-                    retcode = call(["/usr/lib/nagios/plugins/check_http", "-I", v, '-u /alive.html', '-t 2'], stdout=FNULL, stderr=STDOUT)
-                if retcode == 0:
-                    doret = True
-                    ret.append({k:v})
-            else:
-                ret.append({k:v})
-
-    if doret:
-        return ret
-    else:
-        return False
+    return False
 
 def getnodes(doc):
-    ret = {}
-    ret['domains'] = []
-    for dom in doc['domains']:
-        newdom = {}
-        for t in ['ttl', 'domain', 'services']:
-            try:
-                newdom[t] = dom[t]
-            except:
-                pass
-        newdom['records'] = {}
-        for r in dom['records'].iteritems():
-            add = r[1]
-            for v in r[1]:
-                try:
-                    if v['check']:
-                        add = check_node(r[1])
-                except Exception, e:
-                    pass
-            if add != False:
-                newdom['records'][r[0]] = add
-        ret['domains'].append(newdom)
+    nodes = []
+    for z, zd in enumerate(doc['domains']):
+        for n, nd in zd['nodes'].iteritems():
+            node = Node(n)
+            for k in [ 'ipv4', 'ipv6']:
+                if check_node(nd[k]):
+                    node.add_addr(nd[k])
 
-    return ret
+            if node.has_addr():
+                for asn in nd['asns']:
+                    node.add_asn(asn)
+                for ct in nd['countries']:
+                    node.add_ct(ct)
 
-def conf_out(doc):
+                nodes.append(node)
+
+    return nodes
+
+def write_conf(doc, nodes):
+    newdoc = {}
+    newdoc['domains'] = []
+
+    for z, zd in enumerate(doc['domains']):
+        zone = {}
+        zone['domain'] = zd['domain']
+        zone['ttl'] = zd['ttl']
+        zone['records'] = zd['records']
+        zone['services'] = zd['services']
+        del zd['nodes']
+        for n in nodes:
+            n.set_zone(zd['domain'])
+            for l, ld in n.get_rrs().iteritems():
+                zone['records'][l] = ld
+
+        newdoc['domains'].append(zone)
+
     try:
-        f = open(OUTCONF, 'w')
-        f.write(dump(doc))
-        f.close()
+        print dump(newdoc)
     except:
         print "Could not write new config file %s!" % (OUTCONF)
 
-conf_in();
 
-newdoc = getnodes(document)
+read_conf();
 
-conf_out(newdoc)
+nodes = getnodes(document)
+
+write_conf(document, nodes)
